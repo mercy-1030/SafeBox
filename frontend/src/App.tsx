@@ -39,6 +39,9 @@ function App() {
   const [authMode, setAuthMode] = useState<AuthMode>('login');
   const [accessRole, setAccessRole] = useState<UserRole>('member');
 
+  // Controls whether the landing page or authentication page is displayed.
+  const [showHome, setShowHome] = useState(true);
+
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -48,7 +51,7 @@ function App() {
   const [authSuccess, setAuthSuccess] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  async function loadProfile(userId: string) {
+  async function loadProfile(userId: string): Promise<UserProfile> {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, full_name, email, role, is_active')
@@ -60,40 +63,42 @@ function App() {
     }
 
     if (!data.is_active) {
-      throw new Error('Your account is currently inactive. Contact the administrator.');
+      throw new Error(
+        'Your account is currently inactive. Contact the administrator.'
+      );
     }
 
     if (data.role !== 'member' && data.role !== 'super_admin') {
       throw new Error('Invalid account role.');
     }
 
-    setProfile(data as UserProfile);
+    return data as UserProfile;
   }
 
+  // Restore an existing Supabase session.
   useEffect(() => {
     let mounted = true;
 
     async function initialize() {
       try {
-        const { data } = await supabase.auth.getSession();
+        const { data, error } = await supabase.auth.getSession();
+
+        if (error) throw error;
 
         if (data.session?.user) {
-          const { data: profileData, error } = await supabase
-            .from('profiles')
-            .select('id, full_name, email, role, is_active')
-            .eq('id', data.session.user.id)
-            .single();
+          const userProfile = await loadProfile(data.session.user.id);
 
           if (!mounted) return;
 
-          if (!error && profileData?.is_active) {
-            setProfile(profileData as UserProfile);
-          } else {
-            await supabase.auth.signOut();
-          }
+          setProfile(userProfile);
         }
       } catch (error) {
         console.error('Session initialization error:', error);
+
+        if (mounted) {
+          await supabase.auth.signOut();
+          setProfile(null);
+        }
       } finally {
         if (mounted) {
           setLoading(false);
@@ -106,21 +111,9 @@ function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') {
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT' && mounted) {
         setProfile(null);
-      }
-
-      if (event === 'SIGNED_IN' && session?.user) {
-        setTimeout(async () => {
-          if (!mounted) return;
-
-          try {
-            await loadProfile(session.user.id);
-          } catch (error) {
-            console.error('Profile loading error:', error);
-          }
-        }, 0);
       }
     });
 
@@ -135,15 +128,19 @@ function App() {
     setAuthSuccess('');
   }
 
+  // Open the correct login portal.
   function openLogin(role: UserRole) {
+    setShowHome(false);
     setAccessRole(role);
     setAuthMode('login');
     setAuthError('');
     setAuthSuccess('');
     setPassword('');
     setFullName('');
+    setShowPassword(false);
   }
 
+  // Login and registration.
   async function handleAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     resetMessages();
@@ -183,11 +180,12 @@ function App() {
         if (error) throw error;
 
         if (data.user && data.session) {
-          await loadProfile(data.user.id);
+          const userProfile = await loadProfile(data.user.id);
+          setProfile(userProfile);
           setAuthSuccess('Your account has been created successfully.');
         } else {
           setAuthSuccess(
-            'Registration successful. You can now sign in to your account.'
+            'Registration successful. Please verify your email if required, then sign in.'
           );
           setAuthMode('login');
           setPassword('');
@@ -204,24 +202,11 @@ function App() {
           throw new Error('Login failed. Please try again.');
         }
 
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, full_name, email, role, is_active')
-          .eq('id', data.user.id)
-          .single();
+        const userProfile = await loadProfile(data.user.id);
 
-        if (profileError || !profileData) {
+        if (userProfile.role !== accessRole) {
           await supabase.auth.signOut();
-          throw new Error('Your account profile could not be found.');
-        }
 
-        if (!profileData.is_active) {
-          await supabase.auth.signOut();
-          throw new Error('Your account is inactive. Contact the administrator.');
-        }
-
-        if (profileData.role !== accessRole) {
-          await supabase.auth.signOut();
           throw new Error(
             accessRole === 'super_admin'
               ? 'This account does not have Super Admin access.'
@@ -229,37 +214,48 @@ function App() {
           );
         }
 
-        setProfile(profileData as UserProfile);
+        setProfile(userProfile);
         setPassword('');
       }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Something went wrong.';
+
       setAuthError(message);
     } finally {
       setSubmitting(false);
     }
   }
 
+  // Logout.
   async function handleLogout() {
     setLoading(true);
 
     try {
-      await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
+
+      if (error) throw error;
+
       setProfile(null);
       setEmail('');
       setPassword('');
       setFullName('');
       setAuthMode('login');
       setAccessRole('member');
+      setShowHome(true);
+      setShowPassword(false);
       resetMessages();
     } catch (error) {
       console.error('Logout error:', error);
+      setAuthError(
+        error instanceof Error ? error.message : 'Unable to log out.'
+      );
     } finally {
       setLoading(false);
     }
   }
 
+  // Loading screen.
   if (loading || !sessionChecked) {
     return (
       <div className="loading-screen">
@@ -271,10 +267,14 @@ function App() {
     );
   }
 
+  // Authenticated dashboard.
   if (profile) {
     return (
       <div className="dashboard-screen">
-        <div className="dashboard-main" style={{ width: '100%', marginLeft: 0 }}>
+        <div
+          className="dashboard-main"
+          style={{ width: '100%', marginLeft: 0 }}
+        >
           <header className="dashboard-topbar">
             <div className="brand">
               <div className="brand-icon">
@@ -316,7 +316,8 @@ function App() {
     );
   }
 
-  if (authMode === 'login') {
+  // Landing page.
+  if (showHome) {
     return (
       <div className="home-screen">
         <nav className="home-navbar">
@@ -381,6 +382,7 @@ function App() {
               <button
                 className="secondary-button"
                 onClick={() => {
+                  setShowHome(false);
                   setAuthMode('register');
                   setAccessRole('member');
                   resetMessages();
@@ -511,6 +513,7 @@ function App() {
     );
   }
 
+  // Login and registration screen.
   return (
     <div className="auth-screen">
       <aside className="auth-side-panel">
@@ -548,6 +551,7 @@ function App() {
             className="text-button"
             type="button"
             onClick={() => {
+              setShowHome(true);
               setAuthMode('login');
               setAccessRole('member');
               resetMessages();
@@ -631,19 +635,36 @@ function App() {
 
                 <button
                   type="button"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-label={
+                    showPassword ? 'Hide password' : 'Show password'
+                  }
                   onClick={() => setShowPassword(!showPassword)}
                   style={{
                     position: 'absolute',
                     right: 12,
                     top: '50%',
                     transform: 'translateY(-50%)',
+                    width: 36,
+                    minWidth: 36,
+                    height: 36,
+                    minHeight: 36,
+                    margin: 0,
+                    padding: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                     border: 0,
                     background: 'transparent',
                     color: '#7d8798',
+                    boxShadow: 'none',
+                    zIndex: 2,
                   }}
                 >
-                  {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                  {showPassword ? (
+                    <EyeOff size={19} />
+                  ) : (
+                    <Eye size={19} />
+                  )}
                 </button>
               </div>
 
@@ -676,6 +697,7 @@ function App() {
                 : authMode === 'register'
                   ? 'Create Account'
                   : 'Sign In'}
+
               {!submitting && <ArrowRight size={17} />}
             </button>
           </form>
@@ -685,6 +707,7 @@ function App() {
               {authMode === 'register'
                 ? 'Already have an account?'
                 : "Don't have an account?"}{' '}
+
               <button
                 type="button"
                 onClick={() => {
@@ -717,8 +740,18 @@ function App() {
             )}
           </div>
 
-          <p className="auth-side-bottom" style={{ textAlign: 'center', marginTop: 25 }}>
-            <ShieldCheck size={14} style={{ verticalAlign: 'middle' }} />{' '}
+          <p
+            className="auth-side-bottom"
+            style={{
+              textAlign: 'center',
+              marginTop: 25,
+              color: '#8992a4',
+            }}
+          >
+            <ShieldCheck
+              size={14}
+              style={{ verticalAlign: 'middle' }}
+            />{' '}
             Your account access is protected by SafeBox.
           </p>
         </div>
