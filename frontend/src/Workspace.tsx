@@ -2,8 +2,20 @@
 import { useEffect, useState, type FormEvent, type ChangeEvent } from 'react';
 import { supabase } from './lib/supabase';
 import {
-  Folder as FolderIcon, FolderPlus, File as FileIcon, Upload, Download,
-  Eye, Pencil, Trash2, Share2, ArrowLeft, Search, X, Users, UserRound,
+  Folder as FolderIcon,
+  FolderPlus,
+  File as FileIcon,
+  Upload,
+  Download,
+  Eye,
+  Pencil,
+  Trash2,
+  Share2,
+  ArrowLeft,
+  Search,
+  X,
+  Users,
+  UserRound,
 } from 'lucide-react';
 
 type Folder = {
@@ -57,6 +69,7 @@ export default function Workspace({ userId, role }: Props) {
   const [shareEmail, setShareEmail] = useState('');
   const [uploadKey, setUploadKey] = useState(0);
 
+  // Admin works inside the selected member's workspace.
   const ownerId = admin ? member?.id ?? '' : userId;
 
   function notify(error: unknown) {
@@ -89,7 +102,8 @@ export default function Workspace({ userId, role }: Props) {
     setMessage(typeof error === 'string' ? error : 'Something went wrong.');
   }
 
-  // FIXED: Handles duplicate root records safely.
+  // Find or create the selected owner's root folder.
+  // Handles duplicate root records safely.
   async function getRoot(id: string): Promise<Folder | null> {
     if (!id) return null;
 
@@ -104,10 +118,7 @@ export default function Workspace({ userId, role }: Props) {
       .maybeSingle();
 
     if (error) throw error;
-
     if (data) return data as Folder;
-
-    if (admin) return null;
 
     const { data: newRoot, error: createError } = await supabase
       .from('folders')
@@ -183,7 +194,6 @@ export default function Workspace({ userId, role }: Props) {
 
   async function loadWorkspace() {
     if (admin && !member) {
-      await loadMembers();
       setFolders([]);
       setFiles([]);
       setShared([]);
@@ -254,8 +264,11 @@ export default function Workspace({ userId, role }: Props) {
   function openMember(selectedMember: Member) {
     setMember(selectedMember);
     setCurrent(null);
+    setFolderName('');
     setSearch('');
     setMessage('');
+    setPreview(null);
+    setShareTarget(null);
   }
 
   function back() {
@@ -263,6 +276,9 @@ export default function Workspace({ userId, role }: Props) {
       setCurrent(null);
     } else if (admin) {
       setMember(null);
+      setFolderName('');
+      setFiles([]);
+      setFolders([]);
     }
 
     setSearch('');
@@ -320,24 +336,34 @@ export default function Workspace({ userId, role }: Props) {
     }
   }
 
+  // Both Admin and Member can upload.
+  // Admin uploads into the selected member's account.
   async function uploadFiles(e: ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files ?? []);
 
-    if (!selected.length || admin) return;
+    if (!selected.length) return;
+
+    if (!ownerId) {
+      setMessage('Select a member before uploading files.');
+      e.target.value = '';
+      return;
+    }
 
     setLoading(true);
     setMessage('');
 
     try {
-      const destination = current ?? await getRoot(userId);
+      const destination = current ?? await getRoot(ownerId);
 
       if (!destination) {
-        throw new Error('Could not find your upload folder.');
+        throw new Error('Could not find the upload folder.');
       }
+
+      let uploadedCount = 0;
 
       for (const file of selected) {
         const safe = file.name.replace(/[^\w.-]/g, '_');
-        const path = `${userId}/${destination.id}/${Date.now()}_${safe}`;
+        const path = `${ownerId}/${destination.id}/${Date.now()}_${safe}`;
 
         const { error: uploadError } = await supabase.storage
           .from(BUCKET)
@@ -352,7 +378,7 @@ export default function Workspace({ userId, role }: Props) {
           .from('documents')
           .insert({
             folder_id: destination.id,
-            owner_id: userId,
+            owner_id: ownerId,
             file_name: file.name,
             storage_path: path,
             file_type: file.type || 'application/octet-stream',
@@ -363,9 +389,11 @@ export default function Workspace({ userId, role }: Props) {
           await supabase.storage.from(BUCKET).remove([path]);
           throw error;
         }
+
+        uploadedCount++;
       }
 
-      setMessage(`${selected.length} file(s) uploaded successfully.`);
+      setMessage(`${uploadedCount} file(s) uploaded successfully.`);
       setUploadKey((key) => key + 1);
 
       await loadWorkspace();
@@ -373,6 +401,7 @@ export default function Workspace({ userId, role }: Props) {
       notify(error);
     } finally {
       setLoading(false);
+      e.target.value = '';
     }
   }
 
@@ -462,13 +491,11 @@ export default function Workspace({ userId, role }: Props) {
         .eq('id', file.id);
 
       if (error) {
-        // Try to move the object back if the metadata update fails.
         await supabase.storage.from(BUCKET).move(newPath, file.storage_path);
         throw error;
       }
 
       setMessage('File renamed successfully.');
-
       await loadWorkspace();
     } catch (error) {
       notify(error);
@@ -605,7 +632,6 @@ export default function Workspace({ userId, role }: Props) {
       if (error) throw error;
 
       setMessage('Folder renamed successfully.');
-
       await loadWorkspace();
     } catch (error) {
       notify(error);
@@ -646,7 +672,6 @@ export default function Workspace({ userId, role }: Props) {
       if (error) throw error;
 
       setMessage('Folder deleted successfully.');
-
       await loadWorkspace();
     } catch (error) {
       notify(error);
@@ -709,6 +734,7 @@ export default function Workspace({ userId, role }: Props) {
     f.file_name.toLowerCase().includes(search.toLowerCase())
   );
 
+  // Admin member selection screen.
   if (admin && !member) {
     return (
       <section className="workspace-area">
@@ -790,6 +816,7 @@ export default function Workspace({ userId, role }: Props) {
             {current?.folder_name ||
               (admin ? member?.full_name : 'My Files')}
           </h2>
+
           <p>
             {admin
               ? member?.email
@@ -797,7 +824,7 @@ export default function Workspace({ userId, role }: Props) {
           </p>
         </div>
 
-        <button className="back-button" onClick={back}>
+        <button className="back-button" onClick={back} type="button">
           <ArrowLeft size={16} />
           {current
             ? 'Back to Folders'
@@ -807,40 +834,43 @@ export default function Workspace({ userId, role }: Props) {
         </button>
       </div>
 
+      {/* Both Admin and Member get folder creation and upload controls. */}
       <div className="file-toolbar">
-        {!admin && (
-          <>
-            <form
-              className="folder-create-form"
-              onSubmit={createFolder}
-            >
-              <input
-                placeholder="New folder name"
-                value={folderName}
-                onChange={(e) => setFolderName(e.target.value)}
-              />
+        <form
+          className="folder-create-form"
+          onSubmit={createFolder}
+        >
+          <input
+            placeholder="New folder name"
+            value={folderName}
+            onChange={(e) => setFolderName(e.target.value)}
+          />
 
-              <button type="submit" disabled={loading}>
-                <FolderPlus size={16} />
-                Create Folder
-              </button>
-            </form>
+          <button type="submit" disabled={loading || !ownerId}>
+            <FolderPlus size={16} />
+            Create Folder
+          </button>
+        </form>
 
-            <label className="action-button">
-              <Upload size={16} />
-              Upload Files
+        <label
+          className="action-button"
+          style={{
+            cursor: loading || !ownerId ? 'not-allowed' : 'pointer',
+            opacity: loading || !ownerId ? 0.6 : 1,
+          }}
+        >
+          <Upload size={16} />
+          Upload Files
 
-              <input
-                key={uploadKey}
-                type="file"
-                multiple
-                hidden
-                disabled={loading}
-                onChange={uploadFiles}
-              />
-            </label>
-          </>
-        )}
+          <input
+            key={uploadKey}
+            type="file"
+            multiple
+            hidden
+            disabled={loading || !ownerId}
+            onChange={uploadFiles}
+          />
+        </label>
 
         <div className="file-search">
           <Search size={16} />
@@ -878,6 +908,7 @@ export default function Workspace({ userId, role }: Props) {
               <button
                 className="file-action"
                 onClick={() => setCurrent(f)}
+                type="button"
               >
                 Open
               </button>
@@ -886,6 +917,7 @@ export default function Workspace({ userId, role }: Props) {
                 className="file-action"
                 title="Rename folder"
                 onClick={() => renameFolder(f)}
+                type="button"
               >
                 <Pencil size={15} />
               </button>
@@ -894,6 +926,7 @@ export default function Workspace({ userId, role }: Props) {
                 className="file-action"
                 title="Delete folder"
                 onClick={() => deleteFolder(f)}
+                type="button"
               >
                 <Trash2 size={15} />
               </button>
@@ -928,6 +961,7 @@ export default function Workspace({ userId, role }: Props) {
                 className="file-action"
                 title="Preview"
                 onClick={() => previewFile(f)}
+                type="button"
               >
                 <Eye size={16} />
               </button>
@@ -936,6 +970,7 @@ export default function Workspace({ userId, role }: Props) {
                 className="file-action"
                 title="Download"
                 onClick={() => downloadFile(f)}
+                type="button"
               >
                 <Download size={16} />
               </button>
@@ -946,6 +981,7 @@ export default function Workspace({ userId, role }: Props) {
                     className="file-action"
                     title="Share"
                     onClick={() => shareFile(f)}
+                    type="button"
                   >
                     <Share2 size={16} />
                   </button>
@@ -954,6 +990,7 @@ export default function Workspace({ userId, role }: Props) {
                     className="file-action"
                     title="Rename"
                     onClick={() => renameFile(f)}
+                    type="button"
                   >
                     <Pencil size={16} />
                   </button>
@@ -962,6 +999,7 @@ export default function Workspace({ userId, role }: Props) {
                     className="file-action"
                     title="Delete"
                     onClick={() => deleteFile(f)}
+                    type="button"
                   >
                     <Trash2 size={16} />
                   </button>
@@ -1000,6 +1038,7 @@ export default function Workspace({ userId, role }: Props) {
                     className="file-action"
                     onClick={() => previewFile(f)}
                     title="Preview"
+                    type="button"
                   >
                     <Eye size={16} />
                   </button>
@@ -1008,6 +1047,7 @@ export default function Workspace({ userId, role }: Props) {
                     className="file-action"
                     onClick={() => downloadFile(f)}
                     title="Download"
+                    type="button"
                   >
                     <Download size={16} />
                   </button>
