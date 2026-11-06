@@ -1903,3 +1903,26 @@ button:disabled {
     display: none;
   }
 }
+
+/* Fix password input eye button */
+.auth-form .form-group > div {
+  position: relative;
+}
+
+.auth-form .form-group > div > input {
+  padding-right: 48px;
+}
+
+.auth-form .form-group > div > button {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+  z-index: 2;
+}
